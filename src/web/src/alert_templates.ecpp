@@ -92,6 +92,8 @@ if (!msg) {
     http_die ("internal-error", err.c_str ());
 }
 
+ZstrGuard uuid (zmsg_popstr (msg));
+
 ZstrGuard result (zmsg_popstr (msg));
 if (!result || !streq (result, "LIST")) {
     log_warning ("Error reply LIST template '%s', result=%s", type.c_str (), result.get ());
