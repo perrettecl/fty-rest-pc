@@ -92,7 +92,7 @@ if (!msg) {
     http_die ("internal-error", err.c_str ());
 }
 
-ZstrGuard uuid (zmsg_popstr (msg));
+ZstrGuard uuidForControl (zmsg_popstr (msg));
 
 ZstrGuard result (zmsg_popstr (msg));
 if (!result || !streq (result, "LIST")) {
