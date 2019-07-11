@@ -23,6 +23,8 @@
  \brief  Returns a list of alert rules according specified parameters
 */
 #><%pre>
+#include <cxxtools/jsonserializer.h>
+#include <cxxtools/serializationinfo.h>
 #include <cxxtools/jsondeserializer.h>
 #include <cxxtools/regex.h>
 #include <vector>
@@ -35,12 +37,20 @@
 #include <fty_common_rest.h>
 #include <fty_common_mlm_utils.h>
 #include <fty_common_mlm_guards.h>
+#include <fty_common_db_asset.h>
 
 </%pre>
 <%request scope="global">
 UserInfo user;
+bool database_ready;
 </%request>
 <%cpp>
+    // verify server is ready
+    if (!database_ready) {
+        log_debug ("Database is not ready yet.");
+        std::string err =  TRANSLATE_ME ("Database is not ready yet, please try again after a while.");
+        http_die ("internal-error", err.c_str ());
+    }
 
     // check user permissions
     static const std::map <BiosProfile, std::string> PERMISSIONS = {
@@ -156,6 +166,7 @@ if (!streq (mlm_client_subject (client), "rfc-evaluator-rules")) {
     std::string err =  TRANSLATE_ME ("Bad message.");
     http_die ("internal-error", err.c_str ());
 }
+
 // Check command. Can be LIST or ERROR
 ZstrGuard part (zmsg_popstr (recv_msg));
 if (streq (part, "LIST")) {
@@ -176,25 +187,84 @@ if (streq (part, "LIST")) {
         http_die ("internal-error", err.c_str ());
     }
     part = zmsg_popstr (recv_msg);
-    bool first = true;
-    </%cpp>
-[
-% while (part) {
-%   // FIXME: properly parse and write JSON instead of manipulating strings.
-%   const char *internalCat = "\"CAT_INTERNAL\"";
-%   if (first && (strstr(part, internalCat) == nullptr)) {
-    <$$ part $>
-%     first = false;
-%   }
-%   else if (strstr(part, internalCat) == nullptr) {
-,   <$$ part $>
-%   }
-% part = zmsg_popstr (recv_msg);
-% }
-]
-    <%cpp>
+    
+    cxxtools::SerializationInfo si;
+    si.setCategory(cxxtools::SerializationInfo::Category::Array);
+
+    //variables for assetLink and ename
+    std::string assetLink = "";
+    std::string externalName = "";
+
+    while (part) {
+        const char *internalCat = "\"CAT_INTERNAL\"";
+
+        //we need to serialize the section
+        if (strstr(part, internalCat) == nullptr) {
+
+            //unserialize
+            cxxtools::SerializationInfo & siRule = si.addMember("");
+
+            std::stringstream input (part.get());
+            cxxtools::JsonDeserializer deserializer(input);
+            deserializer.deserialize(siRule);
+
+            //try to find the ename in threshold rules
+            try
+            {
+                cxxtools::SerializationInfo & results = siRule.getMember("threshold").getMember("results");
+
+                for (size_t index = 0; index < results.memberCount(); index++)
+                {
+                    try
+                    {
+                        cxxtools::SerializationInfo & ename = results.getMember(index).getMember(0)
+                                                                    .getMember("description")
+                                                                    .getMember("variables").getMember("ename");
+
+                        //get the si for asset link and ename
+                        cxxtools::SerializationInfo & value = ename.getMember("value");
+                        cxxtools::SerializationInfo & assetLink = ename.getMember("assetLink");
+
+                        //recover assetLink
+                        std::string tmpAssetLink;
+                        assetLink.getValue(tmpAssetLink);
+
+                        //recover the data of the asset if needed
+                        if(tmpAssetLink != assetLink)
+                        {
+                            DBAssets::name_to_extname(tmpAssetLink, externalName);
+                            assetLink = tmpAssetLink;
+                        }
+
+                        //change the value of the external name (ename)
+                        value.setValue(externalName);
+
+                    }
+                    catch(const std::exception& /* e */)
+                    {
+                        //show must go on => ignore the error and return the JSON as it is for this rule.
+                    }
+                }
+
+            }
+            catch(const std::exception& /* e */)
+            {
+               //show must go on => ignore the error and return the JSON as it is for this rule.
+            }
+            
+
+        }
+
+        part = zmsg_popstr (recv_msg);
+    }
+
+    cxxtools::JsonSerializer serializer(reply.out());
+    serializer.beautify (true);
+    serializer.serialize(si).finish();
+
     return HTTP_OK;
 }
+
 if (streq (part, "ERROR")) {
     part = zmsg_popstr (recv_msg);
     if (!part) {
@@ -213,6 +283,7 @@ if (streq (part, "ERROR")) {
     std::string err =  TRANSLATE_ME ("Error while retrieving list of rules with type = '%s': %s.", checked_type.c_str (), reason.c_str ());
     http_die ("internal-error", err.c_str ());
 }
+
 // Message does not conform to protocol
 log_error ("Unexptected reply from  '%s'. Does not conform to rfc-evaluator-rules.",
     mlm_client_sender (client));
