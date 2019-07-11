@@ -29,6 +29,7 @@
 #include <cxxtools/regex.h>
 #include <vector>
 #include <string>
+#include <regex>
 #include <malamute.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -201,58 +202,74 @@ if (streq (part, "LIST")) {
         //we need to serialize the section
         if (strstr(part, internalCat) == nullptr) {
 
-            //unserialize
+            //format to json minified, that's not optimal but that's the best way
+            // to ensure the good format to work with the regex
+            // minify => deserialize and serialize it again
+            std::stringstream inputTmp(part);
+            cxxtools::JsonDeserializer deserializerTmp(inputTmp);
+            
+            cxxtools::SerializationInfo siTmp;
+            deserializerTmp.deserialize(siTmp);
+
+            std::stringstream output;
+            cxxtools::JsonSerializer serializerTmp(output);
+            serializerTmp.beautify(false);
+            serializerTmp.serialize(siTmp).finish();
+
+            std::string data = output.str();
+
+            //recover the ename JSON => "ename":{"value":"epdu-8","assetLink":"epdu-8"}
+            std::size_t found = data.find("\"ename\":");
+
+            if(found!=std::string::npos){
+
+                try
+                {
+                    //we have an ename section. Extract {"value":"epdu-8","assetLink":"epdu-8"}
+                    std::size_t start = data.find("{", found);
+                    std::size_t end = data.find("}", found);
+
+                    std::string enameData = data.substr(start, end);
+
+                    //unserialize the section
+                    cxxtools::SerializationInfo siEname;
+
+                    std::stringstream input(enameData);
+                    cxxtools::JsonDeserializer deserializer(input);
+                    deserializer.deserialize(siEname);
+
+                    const cxxtools::SerializationInfo & siValue = siEname.getMember("value");
+                    const cxxtools::SerializationInfo & siAssetLink = siEname.getMember("assetLink");
+
+                    //recover assetLink
+                    std::string tmpAssetLink;
+                    siAssetLink.getValue(tmpAssetLink);
+
+                    //recover the data of the asset if needed
+                    if(tmpAssetLink != assetLink)
+                    {
+                        DBAssets::name_to_extname(tmpAssetLink, externalName);
+                        assetLink = tmpAssetLink;
+                    }
+
+                    std::string wrongName;
+                    siValue.getValue(wrongName);
+
+                    //Replace the ename by the correct one.
+                    data = std::regex_replace (data ,std::regex("\"value\":\""+wrongName+"\""), "\"value\":\""+externalName+"\"");
+                }
+                catch(const std::exception& /*e*/)
+                {
+                    //ignore the change and continue
+                }  
+            }
+
+            //deserialize the new data to add it in the answer json
             cxxtools::SerializationInfo & siRule = si.addMember("");
 
-            std::stringstream input (part.get());
+            std::stringstream input(data);
             cxxtools::JsonDeserializer deserializer(input);
             deserializer.deserialize(siRule);
-
-            //try to find the ename in threshold rules
-            try
-            {
-                cxxtools::SerializationInfo & results = siRule.getMember("threshold").getMember("results");
-
-                for (size_t index = 0; index < results.memberCount(); index++)
-                {
-                    try
-                    {
-                        cxxtools::SerializationInfo & ename = results.getMember(index).getMember(0)
-                                                                    .getMember("description")
-                                                                    .getMember("variables").getMember("ename");
-
-                        //get the si for asset link and ename
-                        cxxtools::SerializationInfo & value = ename.getMember("value");
-                        cxxtools::SerializationInfo & assetLink = ename.getMember("assetLink");
-
-                        //recover assetLink
-                        std::string tmpAssetLink;
-                        assetLink.getValue(tmpAssetLink);
-
-                        //recover the data of the asset if needed
-                        if(tmpAssetLink != assetLink)
-                        {
-                            DBAssets::name_to_extname(tmpAssetLink, externalName);
-                            assetLink = tmpAssetLink;
-                        }
-
-                        //change the value of the external name (ename)
-                        value.setValue(externalName);
-
-                    }
-                    catch(const std::exception& /* e */)
-                    {
-                        //show must go on => ignore the error and return the JSON as it is for this rule.
-                    }
-                }
-
-            }
-            catch(const std::exception& /* e */)
-            {
-               //show must go on => ignore the error and return the JSON as it is for this rule.
-            }
-            
-
         }
 
         part = zmsg_popstr (recv_msg);
