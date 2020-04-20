@@ -49,6 +49,11 @@ class asset_manager {
             delete_item(
                 uint32_t id,
                 db_a_elmnt_t &element_info);
+
+        std::vector<std::pair<uint32_t, db_reply_t>>
+            delete_item(
+                const std::vector<uint32_t>& ids,
+                std::vector<db_a_elmnt_t>& element_info);
 };
 
 

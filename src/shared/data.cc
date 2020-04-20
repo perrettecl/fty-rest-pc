@@ -342,3 +342,167 @@ db_reply_t
         return ret;
     }
 }
+
+struct CheckException : public std::runtime_error
+{
+    CheckException(
+        uint32_t id, const std::string& msg, int type = DB_ERR, db_err_nos subType = DB_ERROR_UNKNOWN)
+        : std::runtime_error(msg)
+        , id(id)
+        , errType(type)
+        , errSubType(subType)
+    {
+    }
+
+    uint32_t   id;
+    int        errType;
+    db_err_nos errSubType;
+};
+
+static void checkAndAddInfo(tntdb::Connection& conn, std::vector<db_a_elmnt_t>& ids, const db_a_elmnt_t& item)
+{
+    auto it = std::find_if(ids.begin(), ids.end(), [&](const db_a_elmnt_t& check) {
+        return check.id == item.id;
+    });
+
+    if (it == ids.end()) {
+        // disable deleting RC0
+        if (RC0_INAME == item.name) {
+            log_debug("Prevented deleting RC-0");
+            throw CheckException(item.id, "Prevented deleting RC-0");
+        }
+
+        ids.push_back(item);
+    }
+}
+
+static void collectChildren(tntdb::Connection& conn, uint32_t id, std::vector<db_a_elmnt_t>& ids)
+{
+    // Now corresponding functions to collect child items/filter by parent.
+    // TODO: Add to fty-common-db
+    DBAssets::select_assets_cb(conn, [&](const tntdb::Row& row) {
+        if (id == row["id_parent"].getInt()) {
+            db_a_elmnt_t item;
+
+            row["id"].get(item.id);
+            row["id_type"].get(item.type_id);
+            row["id_subtype"].get(item.subtype_id);
+            row["name"].get(item.name);
+
+            collectChildren(conn, item.id, ids);
+            checkAndAddInfo(conn, ids, item);
+        }
+    });
+}
+
+static void deleteSourceLinks(tntdb::Connection& conn, const db_a_elmnt_t& item)
+{
+    try {
+        tntdb::Statement st = conn.prepareCached(
+            " DELETE"
+            " FROM"
+            "   t_bios_asset_link"
+            " WHERE"
+            "   id_asset_device_src = :src");
+
+        auto affected = st.set("src", item.id).execute();
+        log_debug("[t_bios_asset_link]: was deleted %" PRIu64 " rows", affected);
+        LOG_END;
+    } catch (const std::exception& e) {
+        throw CheckException(item.id, e.what(), DB_ERR, DB_ERROR_INTERNAL);
+    }
+}
+
+static db_reply_t deleteAsset(tntdb::Connection& conn, const db_a_elmnt_t& item)
+{
+    if (DBAssets::count_keytag(conn, "logical_asset", item.name) > 0) {
+        throw CheckException(
+            item.id, TRANSLATE_ME("a logical_asset (sensor) refers to it"), DB_ERR, DB_ERROR_DELETEFAIL);
+        // DBAssetsDelete::delete_asset_ext_attribute(conn, "logical_asset", item.id);
+    }
+
+    try {
+        switch (item.type_id) {
+            case persist::asset_type::DATACENTER:
+            case persist::asset_type::ROW:
+            case persist::asset_type::ROOM:
+            case persist::asset_type::RACK:
+                // DBAssetsDelete::delete_asset_links_to(conn, item.id);
+                return persist::delete_dc_room_row_rack(conn, item.id);
+            case persist::asset_type::GROUP:
+                return persist::delete_group(conn, item.id);
+            case persist::asset_type::DEVICE:
+                // Ugly hack, but t_bios_asset_link have FK for asset_device_src field. Add corresponding
+                // function into fty-common-db project.
+                deleteSourceLinks(conn, item);
+                if (item.status == "active") {
+                    // we need device JSON in order to delete active device
+                    std::string asset_json = getJsonAsset(nullptr, item.id);
+                    return persist::delete_device(conn, item.id, asset_json);
+                }
+                return persist::delete_device(conn, item.id);
+        }
+        throw CheckException(item.id, TRANSLATE_ME("unknown type"), DB_ERR, DB_ERROR_INTERNAL);
+    } catch (const std::exception& e) {
+        throw CheckException(item.id, e.what(), DB_ERR, DB_ERROR_DELETEFAIL);
+    }
+}
+
+std::vector<std::pair<uint32_t, db_reply_t>> asset_manager::delete_item(
+    const std::vector<uint32_t>& ids, std::vector<db_a_elmnt_t>& element_info)
+{
+    std::vector<std::pair<uint32_t, db_reply_t>> ret;
+    tntdb::Connection                            conn = tntdb::connect(DBConn::url);
+
+    // collect ids recursively
+    for (uint32_t id : ids) {
+        db_reply<db_web_basic_element_t> basic_info = DBAssets::select_asset_element_web_byId(conn, id);
+
+        if (basic_info.status == 0) {
+            db_reply_t answ = db_reply_new();
+            answ.status     = basic_info.status;
+            answ.errtype    = DB_ERR;
+            answ.errsubtype = DB_ERROR_NOTFOUND;
+            answ.msg        = TRANSLATE_ME("problem with selecting basic info");
+            ret.push_back({id, answ});
+        } else {
+            try {
+                db_a_elmnt_t info;
+                // here we are only if everything was ok
+                info.id         = id;
+                info.type_id    = basic_info.item.type_id;
+                info.subtype_id = basic_info.item.subtype_id;
+                info.name       = basic_info.item.name;
+
+                collectChildren(conn, id, element_info);
+                checkAndAddInfo(conn, element_info, info);
+            } catch (const CheckException& e) {
+                db_reply_t answ = db_reply_new();
+                answ.status     = 0;
+                answ.errtype    = e.errType;
+                answ.errsubtype = e.errSubType;
+                answ.msg        = e.what();
+                log_warning("%s", e.what());
+                LOG_END;
+                ret.push_back({id, answ});
+            }
+        }
+    }
+
+    for (const auto& item : element_info) {
+        try {
+            ret.push_back({item.id, deleteAsset(conn, item)});
+        } catch (const CheckException& e) {
+            db_reply_t answ = db_reply_new();
+            answ.status     = 0;
+            answ.errtype    = e.errType;
+            answ.errsubtype = e.errSubType;
+            answ.msg        = e.what();
+            log_warning("%s", e.what());
+            LOG_END;
+            ret.push_back({item.id, answ});
+        }
+    }
+
+    return ret;
+}
