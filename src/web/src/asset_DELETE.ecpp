@@ -159,7 +159,9 @@ bool database_ready;
                 } else {
                     val.addValue("status", "ERROR");
                     std::string message;
-                    bios_error_idx(row.id, message, "internal-error", it->second.msg.c_str());
+                    int idx;
+                    bios_error_idx(idx, message, "internal-error", it->second.msg.c_str());
+                    idx++;
                     val.addValue("reason", message);
                 }
             }
