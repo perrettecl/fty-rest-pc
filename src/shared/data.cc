@@ -381,7 +381,7 @@ static void collectChildren(tntdb::Connection& conn, uint32_t id, std::vector<db
     // Now corresponding functions to collect child items/filter by parent.
     // TODO: Add to fty-common-db
     DBAssets::select_assets_cb(conn, [&](const tntdb::Row& row) {
-        if (id == row["id_parent"].getInt()) {
+        if (id == static_cast<uint32_t>(row["id_parent"].getInt())) {
             db_a_elmnt_t item;
 
             row["id"].get(item.id);
