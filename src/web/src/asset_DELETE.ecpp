@@ -146,6 +146,7 @@ bool database_ready;
                         int idx;
                         std::string message;
                         bios_error_idx(idx, message, "internal-error", it->second.msg.c_str());
+                        idx++;
                         val.addValue("reason", message);
                     }
                 }
