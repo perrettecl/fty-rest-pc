@@ -388,6 +388,7 @@ static void collectChildren(tntdb::Connection& conn, uint32_t id, std::vector<db
             row["id_type"].get(item.type_id);
             row["id_subtype"].get(item.subtype_id);
             row["name"].get(item.name);
+            row["id_parent"].get(item.parent_id);
 
             collectChildren(conn, item.id, ids);
             checkAndAddInfo(conn, ids, item);
@@ -473,9 +474,28 @@ std::vector<std::pair<uint32_t, db_reply_t>> asset_manager::delete_item(
                 info.type_id    = basic_info.item.type_id;
                 info.subtype_id = basic_info.item.subtype_id;
                 info.name       = basic_info.item.name;
+                info.parent_id  = basic_info.item.parent_id;
 
-                collectChildren(conn, id, element_info);
+                std::vector<db_a_elmnt_t> children;
+                collectChildren(conn, id, children);
+
+                for (uint32_t existsId : ids) {
+                    auto it = std::find_if(children.begin(), children.end(), [&](const db_a_elmnt_t& item){
+                        return item.id == existsId;
+                    });
+                    if (it != children.end()) {
+                        checkAndAddInfo(conn, element_info, *it);
+                        children.erase(it);
+                    }
+                }
+
                 checkAndAddInfo(conn, element_info, info);
+
+                if (!children.empty()) {
+                    throw CheckException(id, TRANSLATE_ME("can't delete because of the asset has a children"));
+                }
+
+
             } catch (const CheckException& e) {
                 db_reply_t answ = db_reply_new();
                 answ.status     = 0;
@@ -489,9 +509,35 @@ std::vector<std::pair<uint32_t, db_reply_t>> asset_manager::delete_item(
         }
     }
 
+    auto isAnyParent = [&](const db_a_elmnt_t& item, const db_a_elmnt_t& parent) {
+        auto p = parent;
+        while(true) {
+            if (item.parent_id == p.id) {
+                return true;
+            }
+            auto it = std::find_if(element_info.begin(), element_info.end(), [&](const db_a_elmnt_t& it) {
+                return it.id == p.parent_id;
+            });
+            if (it == element_info.end()) {
+                return false;
+            }
+            p = *it;
+        }
+    };
+
+    std::sort(element_info.begin(), element_info.end(), [&](const db_a_elmnt_t& l, const db_a_elmnt_t& r) {
+        return isAnyParent(l, r);
+    });
+
     for (const auto& item : element_info) {
         try {
-            ret.push_back({item.id, deleteAsset(conn, item)});
+            auto it = std::find_if(ret.begin(), ret.end(), [&](const std::pair<uint32_t, db_reply_t>& pair) {
+                return pair.first == item.id;
+            });
+
+            if (it == ret.end() || it->second.status != 0) {
+                ret.push_back({item.id, deleteAsset(conn, item)});
+            }
         } catch (const CheckException& e) {
             db_reply_t answ = db_reply_new();
             answ.status     = 0;

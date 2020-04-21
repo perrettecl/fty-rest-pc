@@ -335,6 +335,12 @@
     </mapping>
 
     <mapping>
+      <target>asset_DELETE@libfty_rest</target>
+      <url>^/api/v1/asset\?(.+)$</url>
+      <method>DELETE</method>
+    </mapping>
+
+    <mapping>
       <target>asset_PUT@libfty_rest</target>
       <url>^/api/v1/asset/(.*)$</url>
       <method>PUT</method>
