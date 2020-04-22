@@ -115,8 +115,9 @@ bool database_ready;
         for(const auto& pair: ret) {
             if (pair.second.status != 0) {
                 someAreOk = true;
+                log_info_audit ("Request DELETE asset id %d SUCCESS", pair.first);
             } else {
-                log_error_audit("Request DELETE asset id %s FAILED with error: %s", idsStr.c_str(), pair.second.msg.c_str());
+                log_error_audit("Request DELETE asset id %s FAILED with error: %d", pair.first, pair.second.msg.c_str());
             }
         }
 
@@ -156,10 +157,10 @@ bool database_ready;
             serializer.serialize(si).finish();
 
             if (!someAreOk) {
-                return HTTP_INTERNAL_SERVER_ERROR;
+                return HTTP_CONFLICT;
             }
 
-            log_info_audit ("Request DELETE asset id %s SUCCESS", idsStr.c_str ());
+            log_info_audit ("Request DELETE assets ids %s SUCCESS", idsStr.c_str ());
             return HTTP_OK;
         }
         catch (const std::runtime_error &e) {
@@ -225,6 +226,9 @@ bool database_ready;
         try {
             send_configure (row, persist::asset_operation::DELETE, agent_name);
             log_info_audit ("Request DELETE asset id %s SUCCESS", id.c_str ());
+</%cpp>
+{}
+<%cpp>
             return HTTP_OK;
         }
         catch (const std::runtime_error &e) {
