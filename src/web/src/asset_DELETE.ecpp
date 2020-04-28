@@ -117,7 +117,7 @@ bool database_ready;
                 someAreOk = true;
                 log_info_audit ("Request DELETE asset id %d SUCCESS", pair.first);
             } else {
-                log_error_audit("Request DELETE asset id %s FAILED with error: %d", pair.first, pair.second.msg.c_str());
+                log_error_audit("Request DELETE asset id %d FAILED with error: %s", pair.first, pair.second.msg.c_str());
             }
         }
 

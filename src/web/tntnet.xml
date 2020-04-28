@@ -336,7 +336,7 @@
 
     <mapping>
       <target>asset_DELETE@libfty_rest</target>
-      <url>^/api/v1/asset\?(.+)$</url>
+      <url>^/api/v1/asset?(.+)$</url>
       <method>DELETE</method>
     </mapping>
 
