@@ -138,7 +138,7 @@ bool database_ready;
 
                 cxxtools::SerializationInfo val;
                 val.setCategory(cxxtools::SerializationInfo::Category::Object);
-                val.addValue("asset", row.id);
+                val.addValue("asset", row.name);
                 if (it != ret.end()) {
                     if (it->second.status != 0) {
                         val.addValue("status", "OK");
