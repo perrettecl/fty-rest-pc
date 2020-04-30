@@ -343,6 +343,8 @@ db_reply_t
     }
 }
 
+// ===========================================================================================================
+
 struct CheckException : public std::runtime_error
 {
     CheckException(
@@ -359,93 +361,99 @@ struct CheckException : public std::runtime_error
     db_err_nos errSubType;
 };
 
-static void checkAndAddInfo(tntdb::Connection& conn, std::vector<db_a_elmnt_t>& ids, const db_a_elmnt_t& item)
+struct ElementInfo
 {
-    auto it = std::find_if(ids.begin(), ids.end(), [&](const db_a_elmnt_t& check) {
-        return check.id == item.id;
+    db_a_elmnt_t          el;
+    std::vector<uint32_t> links;
+};
+
+static void checkAndAddInfo(std::vector<ElementInfo>& ids, const ElementInfo& item)
+{
+    auto it = std::find_if(ids.begin(), ids.end(), [&](const ElementInfo& check) {
+        return check.el.id == item.el.id;
     });
 
     if (it == ids.end()) {
         // disable deleting RC0
-        if (RC0_INAME == item.name) {
+        if (RC0_INAME == item.el.name) {
             log_debug("Prevented deleting RC-0");
-            throw CheckException(item.id, "Prevented deleting RC-0");
+            throw CheckException(item.el.id, "Prevented deleting RC-0");
         }
 
         ids.push_back(item);
     }
 }
 
-static void collectChildren(tntdb::Connection& conn, uint32_t id, std::vector<db_a_elmnt_t>& ids)
+static void collectChildren(tntdb::Connection& conn, uint32_t id, std::vector<ElementInfo>& ids)
 {
     // Now corresponding functions to collect child items/filter by parent.
     // TODO: Add to fty-common-db
     DBAssets::select_assets_cb(conn, [&](const tntdb::Row& row) {
         if (id == static_cast<uint32_t>(row["id_parent"].getInt())) {
-            db_a_elmnt_t item;
+            ElementInfo item;
 
-            row["id"].get(item.id);
-            row["id_type"].get(item.type_id);
-            row["id_subtype"].get(item.subtype_id);
-            row["name"].get(item.name);
-            row["id_parent"].get(item.parent_id);
+            row["id"].get(item.el.id);
+            row["id_type"].get(item.el.type_id);
+            row["id_subtype"].get(item.el.subtype_id);
+            row["name"].get(item.el.name);
+            row["id_parent"].get(item.el.parent_id);
 
-            collectChildren(conn, item.id, ids);
-            checkAndAddInfo(conn, ids, item);
+            collectChildren(conn, item.el.id, ids);
+            checkAndAddInfo(ids, item);
         }
     });
 }
 
-static void deleteSourceLinks(tntdb::Connection& conn, const db_a_elmnt_t& item)
+static std::vector<uint32_t> selectAnyLinks(tntdb::Connection& conn, const ElementInfo& item)
 {
+    std::vector<uint32_t> links;
     try {
         tntdb::Statement st = conn.prepareCached(
-            " DELETE"
+            " SELECT"
+            "   id_asset_device_dest"
             " FROM"
             "   t_bios_asset_link"
             " WHERE"
             "   id_asset_device_src = :src");
 
-        auto affected = st.set("src", item.id).execute();
-        log_debug("[t_bios_asset_link]: was deleted %" PRIu64 " rows", affected);
-        LOG_END;
+        auto result = st.set("src", item.el.id).select();
+        for(const auto& row: result) {
+            links.push_back(row.getUnsigned32("id_asset_device_dest"));
+        }
     } catch (const std::exception& e) {
-        throw CheckException(item.id, e.what(), DB_ERR, DB_ERROR_INTERNAL);
+        throw CheckException(item.el.id, e.what(), DB_ERR, DB_ERROR_INTERNAL);
     }
+    return links;
 }
 
-static db_reply_t deleteAsset(tntdb::Connection& conn, const db_a_elmnt_t& item)
+static db_reply_t deleteAsset(tntdb::Connection& conn, const ElementInfo& item)
 {
-    if (DBAssets::count_keytag(conn, "logical_asset", item.name) > 0) {
+    if (DBAssets::count_keytag(conn, "logical_asset", item.el.name) > 0) {
         throw CheckException(
-            item.id, TRANSLATE_ME("a logical_asset (sensor) refers to it"), DB_ERR, DB_ERROR_DELETEFAIL);
-        // DBAssetsDelete::delete_asset_ext_attribute(conn, "logical_asset", item.id);
+            item.el.id, TRANSLATE_ME("a logical_asset (sensor) refers to it"), DB_ERR, DB_ERROR_DELETEFAIL);
     }
 
     try {
-        switch (item.type_id) {
+        switch (item.el.type_id) {
             case persist::asset_type::DATACENTER:
             case persist::asset_type::ROW:
             case persist::asset_type::ROOM:
             case persist::asset_type::RACK:
                 // DBAssetsDelete::delete_asset_links_to(conn, item.id);
-                return persist::delete_dc_room_row_rack(conn, item.id);
+                return persist::delete_dc_room_row_rack(conn, item.el.id);
             case persist::asset_type::GROUP:
-                return persist::delete_group(conn, item.id);
+                return persist::delete_group(conn, item.el.id);
             case persist::asset_type::DEVICE:
-                // Ugly hack, but t_bios_asset_link have FK for asset_device_src field. Add corresponding
-                // function into fty-common-db project.
-                deleteSourceLinks(conn, item);
-                if (item.status == "active") {
+                if (item.el.status == "active") {
                     // we need device JSON in order to delete active device
-                    std::string asset_json = getJsonAsset(nullptr, item.id);
-                    return persist::delete_device(conn, item.id, asset_json);
+                    std::string asset_json = getJsonAsset(nullptr, item.el.id);
+                    return persist::delete_device(conn, item.el.id, asset_json);
                 }
-                return persist::delete_device(conn, item.id);
+                return persist::delete_device(conn, item.el.id);
         }
-        throw CheckException(item.id, TRANSLATE_ME("unknown type"), DB_ERR, DB_ERROR_INTERNAL);
+        throw CheckException(item.el.id, TRANSLATE_ME("unknown type"), DB_ERR, DB_ERROR_INTERNAL);
     } catch (const std::exception& e) {
-        throw CheckException(item.id, e.what(), DB_ERR, DB_ERROR_DELETEFAIL);
+        throw CheckException(item.el.id, e.what(), DB_ERR, DB_ERROR_DELETEFAIL);
     }
 }
 
@@ -456,6 +464,7 @@ std::vector<std::pair<uint32_t, db_reply_t>> asset_manager::delete_item(
     tntdb::Connection                            conn = tntdb::connect(DBConn::url);
 
     // collect ids recursively
+    std::vector<ElementInfo> toDel;
     for (uint32_t id : ids) {
         db_reply<db_web_basic_element_t> basic_info = DBAssets::select_asset_element_web_byId(conn, id);
 
@@ -468,33 +477,40 @@ std::vector<std::pair<uint32_t, db_reply_t>> asset_manager::delete_item(
             ret.push_back({id, answ});
         } else {
             try {
-                db_a_elmnt_t info;
+                ElementInfo info;
                 // here we are only if everything was ok
-                info.id         = id;
-                info.type_id    = basic_info.item.type_id;
-                info.subtype_id = basic_info.item.subtype_id;
-                info.name       = basic_info.item.name;
-                info.parent_id  = basic_info.item.parent_id;
+                info.el.id         = id;
+                info.el.type_id    = basic_info.item.type_id;
+                info.el.subtype_id = basic_info.item.subtype_id;
+                info.el.name       = basic_info.item.name;
+                info.el.parent_id  = basic_info.item.parent_id;
 
-                std::vector<db_a_elmnt_t> children;
+                element_info.push_back(info.el);
+
+                std::vector<ElementInfo> children;
                 collectChildren(conn, id, children);
-
                 for (uint32_t existsId : ids) {
-                    auto it = std::find_if(children.begin(), children.end(), [&](const db_a_elmnt_t& item){
-                        return item.id == existsId;
-                    });
-                    if (it != children.end()) {
-                        checkAndAddInfo(conn, element_info, *it);
-                        children.erase(it);
-                    }
+                    children.erase(std::remove_if(children.begin(), children.end(), [&](const ElementInfo& item){
+                        return item.el.id == existsId;
+                    }), children.end());
                 }
 
-                checkAndAddInfo(conn, element_info, info);
+                auto links = selectAnyLinks(conn, info);
+                info.links = links;
+
+                checkAndAddInfo(toDel, info);
 
                 if (!children.empty()) {
                     throw CheckException(id, TRANSLATE_ME("can't delete the asset because it has at least one child"));
                 }
 
+                for (uint32_t existsId : ids) {
+                    links.erase(std::remove(links.begin(), links.end(), existsId), links.end());
+                }
+
+                if (!links.empty()) {
+                    throw CheckException(id, TRANSLATE_ME("can't delete the asset because it is linked to others"));
+                }
 
             } catch (const CheckException& e) {
                 db_reply_t answ = db_reply_new();
@@ -509,34 +525,48 @@ std::vector<std::pair<uint32_t, db_reply_t>> asset_manager::delete_item(
         }
     }
 
-    auto isAnyParent = [&](const db_a_elmnt_t& item, const db_a_elmnt_t& parent) {
+    auto isLinked = [&](const ElementInfo& item, const ElementInfo& parent) {
+        auto isLinked = std::find(item.links.begin(), item.links.end(), parent.el.id);
+        if (isLinked != item.links.end()) {
+            return false;
+        }
+
+        auto isPLinked = std::find(parent.links.begin(), parent.links.end(), item.el.id);
+        if (isPLinked != parent.links.end()) {
+            return true;
+        }
+        return false;
+    };
+
+    auto isAnyParent = [&](const ElementInfo& item, const ElementInfo& parent) {
         auto p = parent;
         while(true) {
-            if (item.parent_id == p.id) {
+            if (item.el.parent_id == p.el.id) {
                 return true;
             }
-            auto it = std::find_if(element_info.begin(), element_info.end(), [&](const db_a_elmnt_t& it) {
-                return it.id == p.parent_id;
+
+            auto it = std::find_if(toDel.begin(), toDel.end(), [&](const ElementInfo& it) {
+                return it.el.id == p.el.parent_id;
             });
-            if (it == element_info.end()) {
+            if (it == toDel.end()) {
                 return false;
             }
             p = *it;
         }
     };
 
-    std::sort(element_info.begin(), element_info.end(), [&](const db_a_elmnt_t& l, const db_a_elmnt_t& r) {
-        return isAnyParent(l, r);
+    std::sort(toDel.begin(), toDel.end(), [&](const ElementInfo& l, const ElementInfo& r) {
+        return isAnyParent(l, r) || isLinked(l, r);
     });
 
-    for (const auto& item : element_info) {
+    for (const auto& item : toDel) {
         try {
             auto it = std::find_if(ret.begin(), ret.end(), [&](const std::pair<uint32_t, db_reply_t>& pair) {
-                return pair.first == item.id;
+                return pair.first == item.el.id;
             });
 
             if (it == ret.end() || it->second.status != 0) {
-                ret.push_back({item.id, deleteAsset(conn, item)});
+                ret.push_back({item.el.id, deleteAsset(conn, item)});
             }
         } catch (const CheckException& e) {
             db_reply_t answ = db_reply_new();
@@ -546,7 +576,7 @@ std::vector<std::pair<uint32_t, db_reply_t>> asset_manager::delete_item(
             answ.msg        = e.what();
             log_warning("%s", e.what());
             LOG_END;
-            ret.push_back({item.id, answ});
+            ret.push_back({item.el.id, answ});
         }
     }
 
