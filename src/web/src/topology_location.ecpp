@@ -345,18 +345,25 @@ bool database_ready;
     #undef CLEANUP
     
     //order the data
-    cxxtools::SerializationInfo si;
-    
-    std::stringstream input;
-    input << json;
-    cxxtools::JsonDeserializer deserializer(input);
-    deserializer.deserialize(si);
-    
-    order(&si)
+    try
+    {
+        cxxtools::SerializationInfo si;
 
-    // set body (status is 200 OK)
-    cxxtools::JsonSerializer serializer(reply.out());
-    serializer.beautify(true);
-    serializer.serialize(si).finish();
+        std::stringstream input;
+        input << json;
+        cxxtools::JsonDeserializer deserializer(input);
+        deserializer.deserialize(si);
+
+        order(&si)
+
+        // set body (status is 200 OK)
+        cxxtools::JsonSerializer serializer(reply.out());
+        serializer.beautify(true);
+        serializer.serialize(si).finish();
+    }
+    catch(...)
+    {
+        http_die ("internal-error", "serialization error");
+    }
 }
 </%cpp>
