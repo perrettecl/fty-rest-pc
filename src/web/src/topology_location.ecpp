@@ -42,75 +42,6 @@ static void zmsg_pop_s (zmsg_t *msg, std::string & s)
     if (aux) { s = aux; zstr_free (&aux); }
 }
 
-//adding functions to sort the output by alphabetical order (recursive max level 5)
-static bool isBigger(const cxxtools::SerializationInfo & item1, const cxxtools::SerializationInfo & item2)
-{
-    std::string name1, name2;
-    item1.getMember("name").getValue(name1);
-    item2.getMember("name").getValue(name2);
-
-    return (name1 > name2);
-}
-
-static void sort(cxxtools::SerializationInfo * siPtr)
-{
-    if(siPtr->memberCount() < 2)
-    {
-        return;
-    }
-
-    uint firstIndex = 0;
-
-    while( firstIndex != (siPtr->memberCount()))
-    {
-        bool needToAdvance = true;
-
-        const cxxtools::SerializationInfo & firstIndexElementRef = siPtr->getMember(firstIndex);
-
-        for( uint index = firstIndex+1; index < siPtr->memberCount(); index++)
-        {
-            const cxxtools::SerializationInfo & indexElementRef = siPtr->getMember(index);
-
-            if(isBigger(firstIndexElementRef, indexElementRef))
-            {
-                //need to swap
-                //cast because we can not swap const element
-                cxxtools::SerializationInfo * firstIndexElement = const_cast<cxxtools::SerializationInfo*>(&firstIndexElementRef);
-                cxxtools::SerializationInfo * indexElement = const_cast<cxxtools::SerializationInfo*>(&indexElementRef);
-                firstIndexElement->swap(*indexElement);
-                needToAdvance = false;
-                break;
-            }
-        }
-
-        if(needToAdvance)
-        {
-            firstIndex++;
-        }
-    }
-}
-
-//recursive max 5 level
-static void order(cxxtools::SerializationInfo * siPtr)
-{
-    cxxtools::SerializationInfo * contains = siPtr->findMember("contains");
-
-    if(contains != nullptr)
-    {
-        const cxxtools::SerializationInfo & dataRef = contains->getMember(0);
-        cxxtools::SerializationInfo * data = const_cast<cxxtools::SerializationInfo*>(&dataRef);
-
-        sort(data);
-
-        for(size_t index = 0 ; index < data->memberCount(); index++)
-        {
-            const cxxtools::SerializationInfo & item = data->getMember(index);
-            order(const_cast<cxxtools::SerializationInfo*>(&item));
-        }
-    }
-}
-
-
 </%pre>
 <%request scope="global">
 UserInfo user;
@@ -344,26 +275,6 @@ bool database_ready;
     CLEANUP;
     #undef CLEANUP
     
-    //order the data
-    try
-    {
-        cxxtools::SerializationInfo si;
-
-        std::stringstream input;
-        input << json;
-        cxxtools::JsonDeserializer deserializer(input);
-        deserializer.deserialize(si);
-
-        order(&si)
-
-        // set body (status is 200 OK)
-        cxxtools::JsonSerializer serializer(reply.out());
-        serializer.beautify(true);
-        serializer.serialize(si).finish();
-    }
-    catch(...)
-    {
-        http_die ("internal-error", "serialization error");
-    }
+    reply.out() << json;
 }
 </%cpp>
