@@ -73,7 +73,20 @@ bool database_ready;
         std::vector<std::string> idsNotSorted;
         // split and sanity check
         try {
-            cxxtools::split(",", idsStr, std::back_inserter(idsNotSorted));
+
+            std::string s = idsStr;
+            std::string delimiter = ",";
+
+            size_t pos = 0;
+            std::string token;
+            while ((pos = s.find(delimiter)) != std::string::npos) {
+                token = s.substr(0, pos);
+
+                idsNotSorted.push_back(token);
+                
+                s.erase(0, pos + delimiter.length());
+            }
+
         } catch (const std::exception& e) {
             std::string err = TRANSLATE_ME ("ID list is not valid");
             log_error_audit ("Request DELETE asset ids %s FAILED", idsStr.c_str());
