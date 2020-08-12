@@ -26,6 +26,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <mutex>
+#include <map>
+#include <string>
+#include <regex>
 
 #include "shared/data.h"
 #include "shared/configure_inform.h"
@@ -67,10 +70,10 @@ bool database_ready;
 
     std::string idsStr = qparam.param("ids");
     if (!idsStr.empty()) {
-        std::vector<std::string> ids;
+        std::vector<std::string> idsNotSorted;
         // split and sanity check
         try {
-            cxxtools::split(",", idsStr, std::back_inserter(ids));
+            cxxtools::split(",", idsStr, std::back_inserter(idsNotSorted));
         } catch (const std::exception& e) {
             std::string err = TRANSLATE_ME ("ID list is not valid");
             log_error_audit ("Request DELETE asset ids %s FAILED", idsStr.c_str());
@@ -86,10 +89,76 @@ bool database_ready;
         }
         // end sanity checks
 
+
+        //pre sort
+        std::vector<std::string> idsOther;
+        
+        std::vector<std::string> idsSts;
+        std::vector<std::string> idsPdu;
+        std::vector<std::string> idsEpdu;
+        std::vector<std::string> idsUps;
+        
+        std::vector<std::string> idsFeed;
+        
+        std::vector<std::string> idsRack;
+        std::vector<std::string> idsRow;
+        std::vector<std::string> idsRoom;
+        std::vector<std::string> idsDC;
+        
+        for( const std::string & id : idsNotSorted ) {
+            if( std::regex_match (id, std::regex("(sts-)(.*)") ) ) {
+                idsSts.push_back(id);
+            }
+            else if( std::regex_match (id, std::regex("(pdu-)(.*)") ) ) {
+                idsPdu.push_back(id);
+            }
+            else if( std::regex_match (id, std::regex("(epdu-)(.*)") ) ) {
+                idsEpdu.push_back(id);
+            }
+            else if( std::regex_match (id, std::regex("(ups-)(.*)") ) ) {
+                idsUps.push_back(id);
+            }
+            else if( std::regex_match (id, std::regex("(feed-)(.*)") ) ) {
+                idsFeed.push_back(id);
+            }
+            else if( std::regex_match (id, std::regex("(rack-)(.*)") ) ) {
+                idsRack.push_back(id);
+            }
+            else if( std::regex_match (id, std::regex("(row-)(.*)") ) ) {
+                idsRow.push_back(id);
+            }
+            else if( std::regex_match (id, std::regex("(room-)(.*)") ) ) {
+                idsRoom.push_back(id);
+            }
+            else if( std::regex_match (id, std::regex("(datacenter-)(.*)") ) ) {
+                idsDC.push_back(id);
+            }
+            else {
+                idsOther.push_back(id);
+            }
+            
+        }
+        
+        std::vector<std::string> idsSorted;
+        
+        idsSorted.insert(idsSorted.end(), idsOther.begin(), idsOther.end());
+        
+        idsSorted.insert(idsSorted.end(), idsSts.begin(), idsSts.end());
+        idsSorted.insert(idsSorted.end(), idsPdu.begin(), idsPdu.end());
+        idsSorted.insert(idsSorted.end(), idsEpdu.begin(), idsEpdu.end());
+        idsSorted.insert(idsSorted.end(), idsUps.begin(), idsUps.end());
+        
+        idsSorted.insert(idsSorted.end(), idsFeed.begin(), idsFeed.end());
+        
+        idsSorted.insert(idsSorted.end(), idsRack.begin(), idsRack.end());
+        idsSorted.insert(idsSorted.end(), idsRow.begin(), idsRow.end());
+        idsSorted.insert(idsSorted.end(), idsRoom.begin(), idsRoom.end());
+        idsSorted.insert(idsSorted.end(), idsDC.begin(), idsDC.end());
+
         std::unique_lock<std::mutex> lock1(g_deleteAssetMutex);
 
-        std::vector<uint32_t> dbIds;
-        for(const auto& id: ids) {
+        std::vector<std::pair<std::string,uint32_t>> dbIds;
+        for(const auto& id: idsSorted) {
             // get id by name
             int64_t dbid = DBAssets::name_to_asset_id(id);
             if (dbid == -1) {
@@ -103,72 +172,93 @@ bool database_ready;
                 log_error_audit("Request DELETE asset id %s FAILED", id.c_str());
                 http_die("internal-error", err.c_str());
             }
-            dbIds.push_back(dbid);
+            dbIds.push_back({id, dbid});
         }
 
-        // delete it
-        std::vector<db_a_elmnt_t> rows;
-        auto ret = asset_mgr.delete_item(dbIds, rows);
-        lock1.unlock();
+        //perform the delete in lazy mode
 
-        bool someAreOk = false;
-        for(const auto& pair: ret) {
-            if (pair.second.status != 0) {
-                someAreOk = true;
-                log_info_audit ("Request DELETE asset id %d SUCCESS", pair.first);
-            } else {
-                log_error_audit("Request DELETE asset id %d FAILED with error: %s", pair.first, pair.second.msg.c_str());
+        bool atLeastOneIsDeleted = false;
+        std::map<std::string, std::string> mapAssetNameDeleteError;
+        std::map<std::string, db_a_elmnt_t> mapAssetNameDeletedRow;
+
+        while(atLeastOneIsDeleted) {
+            atLeastOneIsDeleted = false;
+
+            auto it = dbIds.begin()
+            while(it != dbIds.end()) {
+                
+                std::string assetName = it->first;
+                uint32_t dbid = it->second;
+                
+                db_a_elmnt_t row;
+                auto ret = asset_mgr.delete_item (dbid, row);
+
+                if ( ret.status == 0 ) {
+                    std::string reason = TRANSLATE_ME ("Asset is in use, remove children/power source links first.");
+                    log_debug ("-- DELETE asset id %s FAILED: Asset is in use, remove children/power source links first.", assetName.c_str());
+                    mapAssetNameDeleteError[assetName] = reason;
+
+                    ++it;
+                }
+                else {
+                    log_debug ("-- DELETE asset id %s SUCCEED.", assetName.c_str());
+                    mapAssetNameDeleteError[assetName] = "";
+                    mapAssetNameDeletedRow[assetName] = row;
+
+                    atLeastOneIsDeleted = true;
+                    it = dbIds.erase(it);
+                }
             }
         }
 
-        std::string agent_name = utils::generate_mlm_client_id ("web.asset_delete");
         try {
+            //create the answer for UI
             cxxtools::SerializationInfo si;
             si.setCategory(cxxtools::SerializationInfo::Category::Array);
 
-            std::vector<std::map<std::string, std::string>> response;
-            for(const auto& row: rows) {
-                auto it = std::find_if(ret.begin(), ret.end(), [&](const std::pair<uint32_t, db_reply_t>& pair) {
-                    return pair.first == row.id;
-                });
+            bool someAreOK = false;
 
-                if (it != ret.end() && it->second.status != 0) {
-                    send_configure (row, persist::asset_operation::DELETE, agent_name);
-                }
-
+            for( const auto &e : mapAssetNameDeleteError) {
                 cxxtools::SerializationInfo val;
                 val.setCategory(cxxtools::SerializationInfo::Category::Object);
-                val.addValue("asset", row.name);
-                if (it != ret.end()) {
-                    if (it->second.status != 0) {
-                        val.addValue("status", "OK");
-                    } else {
-                        val.addValue("status", "ERROR");
-                        int idx;
-                        std::string message;
-                        bios_error_idx(idx, message, "internal-error", it->second.msg.c_str());
-                        idx++;
-                        val.addValue("reason", message);
-                    }
+                val.addValue("asset", e.first);
+
+                if (e.second.empty()) {
+                    val.addValue("status", "OK");
+                    log_info_audit ("-- DELETE asset id %s SUCCEED.", e.first.c_str());
+                    someAreOK = true;
+                } else {
+                    val.addValue("status", "ERROR");
+                    val.addValue("reason", e.second);
+                    log_info_audit ("-- DELETE asset id %s FAILED: %s", e.first.c_str(), e.second.c_str());
                 }
                 si.addMember("") <<= val;
             }
+
             cxxtools::JsonSerializer serializer(reply.out());
             serializer.serialize(si).finish();
 
+            //send notification
+            std::string agent_name = utils::generate_mlm_client_id ("web.asset_delete");
+            for( const auto &e : mapAssetNameDeletedRow) {
+                send_configure (e.second, persist::asset_operation::DELETE, agent_name);
+            }
+
             if (!someAreOk) {
+                log_info_audit ("Request DELETE assets ids %s FAILED", idsStr.c_str ());
                 return HTTP_CONFLICT;
             }
 
             log_info_audit ("Request DELETE assets ids %s SUCCESS", idsStr.c_str ());
             return HTTP_OK;
-        }
-        catch (const std::runtime_error &e) {
+
+        } catch (const std::runtime_error &e) {
             log_error ("%s", e.what ());
             std::string msg = TRANSLATE_ME ("Error during configuration sending of asset change notification. Consult system log.");
             log_error_audit("Request DELETE asset id %s FAILED", idsStr.c_str());
             http_die("internal-error", msg.c_str());
         }
+
     } else {
         std::string id = request.getArg ("id");
         if ( id.empty () ) {
